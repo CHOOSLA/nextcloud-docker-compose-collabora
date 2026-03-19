@@ -1,0 +1,21 @@
+# Secrets
+.env
+*.pem
+*.key
+
+# Application Data / Database / Volumes
+data/
+db/
+redis/
+certs/
+html/
+vhost.d/
+acme/
+
+# Logs
+*.log
+logs/
+
+# OS generated files
+.DS_Store
+Thumbs.db

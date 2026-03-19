@@ -1,0 +1,61 @@
+version: '3'
+
+services:
+  # ---------------------
+  # Nginx Reverse Proxy (nginx-proxy 기반 커스텀 이미지)
+  #  - 80/443을 바인딩
+  #  - docker.sock 읽기 전용 마운트 (컨테이너 자동 감지)
+  #  - 인증서/가상호스트/HTML 볼륨은 이 스택에서만 관리
+  # ---------------------
+  proxy:
+    build: ./proxy
+    restart: always
+    ports:
+      - 80:80
+      - 443:443
+    labels:
+      com.github.jrcs.letsencrypt_nginx_proxy_companion.nginx_proxy: "true" # acme-companion 연동
+    volumes:
+      - certs:/etc/nginx/certs:z,ro
+      - vhost.d:/etc/nginx/vhost.d:z
+      - html:/usr/share/nginx/html:z
+      - /var/run/docker.sock:/tmp/docker.sock:z,ro
+    networks:
+      - proxy-tier
+
+  # ---------------------
+  # Let's Encrypt ACME Companion
+  #  - 인증서 발급/갱신
+  # ---------------------
+  letsencrypt-companion:
+    image: nginxproxy/acme-companion
+    restart: always
+    volumes:
+      - certs:/etc/nginx/certs:z
+      - acme:/etc/acme.sh:z
+      - vhost.d:/etc/nginx/vhost.d:z
+      - html:/usr/share/nginx/html:z
+      - /var/run/docker.sock:/var/run/docker.sock:z,ro
+    networks:
+      - proxy-tier
+    depends_on:
+      - proxy
+
+# ---------------------
+# 프록시 전용 볼륨 (이 스택에서만 사용/관리)
+#  - 기존 nextcloud 스택과 공유할 필요 없음
+# ---------------------
+volumes:
+  certs:
+  acme:
+  vhost.d:
+  html:
+
+# ---------------------
+# 공유 네트워크 생성(전역 이름 고정)
+#  - 다른 스택(nextcloud)이 external:true로 붙는다.
+# ---------------------
+networks:
+  proxy-tier:
+    external: true
+    name: proxy-tier
