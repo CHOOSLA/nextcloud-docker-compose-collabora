@@ -7,7 +7,14 @@ This repository provides a production-ready docker-compose environment for Nextc
 - Collabora Online (CODE) for integrated document editing.
 - Dedicated Cron container for background tasks.
 - Advanced Nginx configuration with Docker internal DNS resolution to prevent 502 Bad Gateway errors.
-- Automatic SSL certificate generation using acme-companion (in the reverse proxy version).
+- Automated SSL: Fully automatic Let's Encrypt certificate generation using `nginx-proxy` and `acme-companion`.
+- Hardware Acceleration Ready: Easily enable NVIDIA GPU support by uncommenting the setup blocks in `docker-compose.yml`.
+
+## NVIDIA GPU Support (Optional)
+By default, this stack is configured to run on standard CPUs. If you have an NVIDIA GPU and the Docker NVIDIA toolkit installed:
+1. Open the `docker-compose.yml` file in your chosen stack.
+2. Under the `nextcloud` and `cron` services, uncomment the `NVIDIA_VISIBLE_DEVICES`, `NVIDIA_DRIVER_CAPABILITIES`, and the `deploy` blocks.
+3. Restart your containers to enjoy hardware-accelerated processing (e.g., face recognition, video transcoding).
 
 ---
 

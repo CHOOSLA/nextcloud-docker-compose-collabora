@@ -37,8 +37,9 @@ services:
       retries: 5
 
   nextcloud:
-    build: .
-    # image: nextcloud:32-fpm
+    # [OPTIONAL] Use 'build: .' instead if you want to compile with NVIDIA GPU support (Requires custom Dockerfile)
+    # build: .
+    image: nextcloud:32-fpm
     container_name: nextcloud-app
     restart: always
     depends_on:
@@ -62,18 +63,21 @@ services:
       PHP_MEMORY_LIMIT: "1024M"
       PHP_UPLOAD_LIMIT: "512G"
       PHP_OPCACHE_MEMORY_CONSUMPTION: "512"
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: all
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu, utility, video, compute]
+      
+      # [OPTIONAL] Hardware Acceleration (NVIDIA GPU) 
+      # Uncomment the environment variables and the 'deploy' block below if your host has an NVIDIA GPU and drivers installed.
+      # NVIDIA_VISIBLE_DEVICES: all
+      # NVIDIA_DRIVER_CAPABILITIES: all
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu, utility, video, compute]
     volumes:
       - nextcloud:/var/www/html
-      - /raid/nextcloud:/var/www/html/data
+      - nextcloud_data:/var/www/html/data
     networks:
       - nextcloud_net
     healthcheck:
@@ -83,8 +87,9 @@ services:
       retries: 3
 
   cron:
-    build: .
-    # image: nextcloud:32-fpm
+    # [OPTIONAL] Use 'build: .' instead if you want to compile with NVIDIA GPU support (Requires custom Dockerfile)
+    # build: .
+    image: nextcloud:32-fpm
     container_name: nextcloud-cron
     restart: always
     entrypoint: /cron.sh
@@ -95,20 +100,23 @@ services:
         condition: service_healthy
     volumes:
       - nextcloud:/var/www/html
-      - /raid/nextcloud:/var/www/html/data
+      - nextcloud_data:/var/www/html/data
     networks:
       - nextcloud_net
     environment:
       PHP_UPLOAD_LIMIT: "512G"
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: all
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu, utility, video, compute]
+      
+      # [OPTIONAL] Hardware Acceleration (NVIDIA GPU) 
+      # Uncomment the environment variables and the 'deploy' block below if your host has an NVIDIA GPU and drivers installed.
+      # NVIDIA_VISIBLE_DEVICES: all
+      # NVIDIA_DRIVER_CAPABILITIES: all
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu, utility, video, compute]
 
   collabora:
     image: collabora/code
@@ -148,6 +156,7 @@ volumes:
   db:
   redis:
   nextcloud:
+  nextcloud_data:
 
 networks:
   nextcloud_net:
