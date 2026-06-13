@@ -19,7 +19,7 @@ By default, this stack is configured to run on standard CPUs. If you have an NVI
 ---
 
 ## Versions & Stack Details
-- **Nextcloud**: `32.0 FPM` (Custom built with Hybrid CUDA 11.8 / 12.6 setup for GPU processing capabilities)
+- **Nextcloud**: `33.0.5 FPM` (Custom built with Hybrid CUDA 11.8 / 12.6 setup for GPU processing capabilities)
 - **MariaDB**: `10.6` (Stable release optimized with custom InnoDB parameters)
 - **Redis**: `7-alpine` (Configured with append-only mode for persistence)
 - **Collabora Online**: `collabora/code` (Latest Stable with SSL disabled internally for proxying)
