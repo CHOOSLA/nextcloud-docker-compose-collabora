@@ -103,3 +103,52 @@ docker-compose up -d
 
 - **502 Bad Gateway while editing documents**: The Nginx configuration in this repository dynamically resolves the Collabora container IP to prevent caching issues. If you still encounter this error, verify that the `nextcloud-collabora` container is fully mapped to the correct network.
 - **SSL Certificate issues (Reverse Proxy)**: Check the Let's Encrypt companion container logs (`docker logs nextcloud-letsencrypt-companion` or similar) to ensure your DuckDNS domain is resolving to the correct IP address.
+
+---
+
+## GPU Troubleshooting (Recognize / Memories)
+
+Field notes from running this stack with an NVIDIA GPU. Three separate failures produced overlapping symptoms; each has a different fix.
+
+### Containers lose GPU access after `systemctl daemon-reload`
+
+`nvidia-smi` inside the container fails with `Failed to initialize NVML: Unknown Error` while the host works fine. The device nodes are still present, but the container's cgroup device permissions are gone. This is a known interaction between systemd reloads and the NVIDIA container runtime.
+
+Fix: restart the affected containers.
+```bash
+docker restart nextcloud-app nextcloud-cron
+```
+Photo classification silently falls back to CPU while in this state, so it is worth checking `docker exec nextcloud-app nvidia-smi` whenever classification feels slow.
+
+### Recognize: video tagging (MoviNet) fails on GPU while photos work
+
+Photo tagging uses plain TensorFlow.js kernels and runs on the GPU without issue. Video tagging loads a SavedModel and dies with:
+
+```
+NOT_FOUND: could not find registered platform with id: 0x...
+  [[{{node movinet_classifier/movinet/stem/stem/conv3d/StatefulPartitionedCall}}]]
+```
+
+The prebuilt `libtensorflow` shipped inside `tfjs-node-gpu` never registers the XLA GPU platform ([tensorflow#50458](https://github.com/tensorflow/tensorflow/issues/50458)), and the MoviNet model has `_XlaMustCompile=true` baked into its function defs. The model demands a compiler the runtime does not have.
+
+Workaround: rename the attr key inside `saved_model.pb` to a same-length unknown key. TensorFlow ignores unknown underscore-prefixed attrs and executes the ops as ordinary CUDA kernels. The protobuf stays valid because the byte length is unchanged.
+
+```bash
+./scripts/patch_movinet_xla.sh [container-name]   # defaults to nextcloud-app
+```
+
+The script backs up the original model before patching. Re-run it after every Recognize app update — updates restore the stock (XLA-enabled) model.
+
+### Memories: video playback fails with "failed to connect to go-vod (port 47788)"
+
+Memories spawns its `go-vod` transcoder on demand — unless `memories.vod.external` is set in `config.php`, in which case it waits for an externally managed instance and never starts its own. A leftover `external: true` from an earlier manual setup breaks all transcoded playback.
+
+Two things to know when diagnosing:
+- `occ config:list memories` shows the *app* config; the *system* config wins. Check `occ config:system:get memories.vod.external`.
+- The missing execute bit on `bin-ext/go-vod-amd64` is a red herring: Memories copies the binary to a temp dir and chmods the copy itself.
+
+Fix:
+```bash
+docker exec -u 33 nextcloud-app php occ config:system:set memories.vod.external --value=false --type=boolean
+```
+NVENC transcoding (`memories.vod.nvenc`) works with the Debian `ffmpeg` in this image once the container sees the GPU.
