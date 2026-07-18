@@ -24,18 +24,39 @@ if ! docker exec "$CONTAINER" test -f "$MODEL_PB"; then
     exit 1
 fi
 
-if [ "$(docker exec "$CONTAINER" grep -c _XlaMustCompilZ "$MODEL_PB")" != "0" ]; then
-    echo "Already patched. Nothing to do."
-    exit 0
-fi
-
 mkdir -p "$BACKUP_DIR"
 STAMP=$(date +%Y%m%d)
-docker cp "$CONTAINER:$(dirname "$MODEL_PB")" "$BACKUP_DIR/movinet-a3.bak-$STAMP"
-echo "Backup: $BACKUP_DIR/movinet-a3.bak-$STAMP"
 
-docker exec "$CONTAINER" perl -pi -e 's/_XlaMustCompile/_XlaMustCompilZ/g' "$MODEL_PB"
-docker exec "$CONTAINER" chown 33:33 "$MODEL_PB"
+if [ "$(docker exec "$CONTAINER" grep -c _XlaMustCompilZ "$MODEL_PB")" != "0" ]; then
+    echo "XLA patch already present in saved_model.pb."
+else
+    docker cp "$CONTAINER:$(dirname "$MODEL_PB")" "$BACKUP_DIR/movinet-a3.bak-$STAMP"
+    echo "Backup: $BACKUP_DIR/movinet-a3.bak-$STAMP"
 
-PATCHED=$(docker exec "$CONTAINER" grep -c _XlaMustCompilZ "$MODEL_PB")
-echo "Patched $PATCHED occurrences. Video tagging now runs on GPU."
+    docker exec "$CONTAINER" perl -pi -e 's/_XlaMustCompile/_XlaMustCompilZ/g' "$MODEL_PB"
+    docker exec "$CONTAINER" chown 33:33 "$MODEL_PB"
+
+    PATCHED=$(docker exec "$CONTAINER" grep -c _XlaMustCompilZ "$MODEL_PB")
+    echo "Patched $PATCHED occurrences. Video tagging now runs on GPU."
+fi
+
+# Second patch: NVDEC hardware video decoding in MovinetModel.js.
+# The stock app transcodes with a bundled software ffmpeg (~3x slower than
+# NVDEC on 4K HEVC). A patched copy lives in backups/; it adds a
+# GPU-decode path with automatic software fallback. App updates replace
+# MovinetModel.js, so re-deploy the patched copy if the marker is gone.
+MOVINET_JS=/var/www/html/custom_apps/recognize/src/movinet/MovinetModel.js
+PATCHED_JS="$(dirname "$0")/backups/MovinetModel.js.nvdec"
+if [ "$(docker exec "$CONTAINER" grep -c hwaccel "$MOVINET_JS")" = "0" ]; then
+    if [ -f "$PATCHED_JS" ]; then
+        docker cp "$CONTAINER:$MOVINET_JS" "$(dirname "$0")/backups/MovinetModel.js.stock-$STAMP"
+        docker cp "$PATCHED_JS" "$CONTAINER:$MOVINET_JS"
+        docker exec "$CONTAINER" chown 33:33 "$MOVINET_JS"
+        echo "NVDEC patch re-applied to MovinetModel.js (stock copy backed up)."
+        echo "If the app update changed this file upstream, diff backups/MovinetModel.js.stock-$STAMP against the patched copy."
+    else
+        echo "WARNING: MovinetModel.js lacks NVDEC patch and no patched copy found at $PATCHED_JS" >&2
+    fi
+else
+    echo "NVDEC patch present in MovinetModel.js."
+fi

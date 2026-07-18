@@ -139,6 +139,12 @@ Workaround: rename the attr key inside `saved_model.pb` to a same-length unknown
 
 The script backs up the original model before patching. Re-run it after every Recognize app update — updates restore the stock (XLA-enabled) model.
 
+### Recognize: slow video tagging (software decode bottleneck)
+
+Even with GPU inference working, MoviNet spends most of its time in ffmpeg: the app ships a bundled software-only ffmpeg (`ffmpeg-static`), so a 30s 4K HEVC clip takes ~48s just to decode. The GPU's NVDEC engine plus `scale_cuda` cuts this to ~11s (video decode and 4K→176px scaling both on GPU, only tiny frames copied back).
+
+`scripts/patch_movinet_xla.sh` also handles this: it deploys a patched `MovinetModel.js` (kept in `scripts/backups/MovinetModel.js.nvdec`) that uses the system ffmpeg with `-hwaccel cuda` when `RECOGNIZE_GPU=true`, falling back to the bundled software path automatically if hardware decoding fails (e.g. AV1 on cards without AV1 decode). Like the model patch, it is overwritten by app updates — re-run the script afterwards. If an update changed `MovinetModel.js` upstream, diff the stock backup the script saves before blindly re-applying.
+
 ### Memories: video playback fails with "failed to connect to go-vod (port 47788)"
 
 Memories spawns its `go-vod` transcoder on demand — unless `memories.vod.external` is set in `config.php`, in which case it waits for an externally managed instance and never starts its own. A leftover `external: true` from an earlier manual setup breaks all transcoded playback.
