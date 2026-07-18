@@ -145,6 +145,16 @@ Even with GPU inference working, MoviNet spends most of its time in ffmpeg: the 
 
 `scripts/patch_movinet_xla.sh` also handles this: it deploys a patched `MovinetModel.js` (kept in `scripts/backups/MovinetModel.js.nvdec`) that uses the system ffmpeg with `-hwaccel cuda` when `RECOGNIZE_GPU=true`, falling back to the bundled software path automatically if hardware decoding fails (e.g. AV1 on cards without AV1 decode). Like the model patch, it is overwritten by app updates — re-run the script afterwards. If an update changed `MovinetModel.js` upstream, diff the stock backup the script saves before blindly re-applying.
 
+VRAM caveat: NVDEC needs a few hundred MB of GPU memory on top of what TensorFlow already holds (~1.8GB for MoviNet inference). On a 3GB card shared with other GPU workloads the decode context often fails to allocate and the classifier silently falls back to software decoding — watch for "NVDEC transcoding failed" in the log. Cards with 6GB+ (or a GPU not shared with other services) get the full speedup.
+
+### Recognize: queue stops processing outside 01:00–05:00 UTC
+
+Not a bug. Recognize classifier jobs are registered as `TIME_INSENSITIVE`, and Nextcloud only runs such jobs inside the maintenance window (`maintenance_window_start` system config, default window = start hour + 4h, UTC). Outside the window the queue simply waits — check `occ config:system:get maintenance_window_start` before debugging. To drain a large backlog immediately, force the job in a loop:
+
+```bash
+occ background-job:execute <job-id> --force-execute   # job-id from oc_jobs, class ClassifyMovinetJob
+```
+
 ### Memories: video playback fails with "failed to connect to go-vod (port 47788)"
 
 Memories spawns its `go-vod` transcoder on demand — unless `memories.vod.external` is set in `config.php`, in which case it waits for an externally managed instance and never starts its own. A leftover `external: true` from an earlier manual setup breaks all transcoded playback.
