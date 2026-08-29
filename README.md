@@ -8,18 +8,26 @@ This repository provides a production-ready docker-compose environment for Nextc
 - Dedicated Cron container for background tasks.
 - Advanced Nginx configuration with Docker internal DNS resolution for both the Collabora and PHP-FPM backends, so either container can be recreated on a new IP without producing 502 Bad Gateway errors.
 - Automated SSL: Fully automatic Let's Encrypt certificate generation using `nginx-proxy` and `acme-companion`.
-- Hardware Acceleration Ready: Easily enable NVIDIA GPU support by uncommenting the setup blocks in `docker-compose.yml`.
+- Hardware Acceleration Ready: NVIDIA GPU support by switching the service to the bundled CUDA `Dockerfile` and uncommenting the device blocks in `docker-compose.yml`.
 
 ## NVIDIA GPU Support (Optional)
-By default, this stack is configured to run on standard CPUs. If you have an NVIDIA GPU and the Docker NVIDIA toolkit installed:
+By default both stacks run the stock Nextcloud image on standard CPUs. GPU support comes from the `Dockerfile` in the stack directory, which layers CUDA 11.8 + 12.6 and cuDNN on top of that image — passing devices into the stock image is not enough, since it contains no CUDA libraries.
+
+If you have an NVIDIA GPU with the drivers and the NVIDIA container toolkit installed:
 1. Open the `docker-compose.yml` file in your chosen stack.
-2. Under the `nextcloud` and `cron` services, uncomment the `NVIDIA_VISIBLE_DEVICES`, `NVIDIA_DRIVER_CAPABILITIES`, and the `deploy` blocks.
-3. Restart your containers to enjoy hardware-accelerated processing (e.g., face recognition, video transcoding).
+2. Under **both** the `nextcloud` and `cron` services, comment out the `image:` line and uncomment `build: .` so the CUDA image gets built.
+3. In the same two services, uncomment `NVIDIA_VISIBLE_DEVICES`, `NVIDIA_DRIVER_CAPABILITIES`, and the `deploy` block.
+4. Rebuild and restart: `docker compose up -d --build`. The first build downloads several GB of CUDA packages and takes around 10-15 minutes.
+
+Verify the container actually sees the card before trusting it:
+```bash
+docker exec nextcloud-app nvidia-smi
+```
 
 ---
 
 ## Versions & Stack Details
-- **Nextcloud**: `34.0.3 FPM` (Custom built with Hybrid CUDA 11.8 / 12.6 setup for GPU processing capabilities). The base image carries PHP 8.5 on Debian trixie; the 33.x line carried PHP 8.4 on the same OS.
+- **Nextcloud**: `34.0.3 FPM` — the stock image by default, or the bundled Dockerfile with a hybrid CUDA 11.8 / 12.6 setup when GPU support is enabled. Either way the base carries PHP 8.5 on Debian trixie; the 33.x line carried PHP 8.4 on the same OS.
 - **MariaDB**: `10.6` (Stable release optimized with custom InnoDB parameters)
 - **Redis**: `7-alpine` (Configured with append-only mode for persistence)
 - **Collabora Online**: `collabora/code` (Latest Stable with SSL disabled internally for proxying)
@@ -32,19 +40,28 @@ By default, this stack is configured to run on standard CPUs. If you have an NVI
 
 This repository is split into two directories based on your network environment:
 
-1. **standalone**: Use this if you do not need an external reverse proxy. Nextcloud will bind directly to your host's port 80/443.
+1. **standalone**: Use this if you do not need an external reverse proxy. Nextcloud binds directly to your host's port 80 and serves plain HTTP — suitable for a LAN-only instance, or behind TLS termination you provide yourself.
 2. **with-reverse-proxy**: Use this if you are using a reverse proxy (e.g., Nginx-Proxy) to handle multiple subdomains. This version is pre-configured to work with a dynamic DNS provider such as DuckDNS and automatically provisions Let's Encrypt SSL certificates.
 
 ---
 
 ## 1. Environment Preparation (Required for both)
 
-Before starting, copy the environment template and configure your credentials.
+Compose reads `.env` from the directory the compose file lives in, so the file belongs **next to the stack you are deploying** — not at the repository root. Copy the template into that directory:
 
 ```bash
-cp .env.example .env
+# reverse proxy version
+cp .env.example with-reverse-proxy/nextcloud/.env
+
+# or standalone version
+cp .env.example standalone/.env
 ```
-Edit `.env` and fill in standard variables such as database passwords, Nextcloud administrator credentials, and your domain name (e.g., your-domain.duckdns.org).
+
+Edit that `.env` and fill in the database passwords, the Nextcloud administrator credentials, and your domain name (e.g. `your-domain.duckdns.org`).
+
+Getting this wrong is quiet rather than loud: Compose substitutes an empty string for every variable it cannot find and only prints a warning. The database then initialises with a blank password, and on the reverse proxy version `VIRTUAL_HOST` ends up empty, so the proxy never routes to the site and no certificate is issued. If `docker compose config` prints `variable is not set` warnings, the file is in the wrong place.
+
+The proxy stack itself (`with-reverse-proxy/proxy`) reads no variables and needs no `.env`.
 
 ---
 
@@ -65,18 +82,18 @@ Create the shared proxy network first.
 docker network create proxy-tier
 ```
 
-### 2.2. Start the Proxy
+### 2.3. Start the Proxy
 Navigate to the proxy directory and start the reverse proxy services. This container will handle incoming web traffic and automatically request SSL certificates.
 ```bash
 cd with-reverse-proxy/proxy
-docker-compose up -d
+docker compose up -d
 ```
 
-### 2.3. Start Nextcloud
+### 2.4. Start Nextcloud
 Navigate to the Nextcloud directory under the reverse proxy folder.
 ```bash
 cd ../nextcloud
-docker-compose up -d
+docker compose up -d
 ```
 
 Your Nextcloud instance is now accessible at your configured DuckDNS domain securely over HTTPS.
@@ -87,14 +104,16 @@ Your Nextcloud instance is now accessible at your configured DuckDNS domain secu
 
 If you prefer to run Nextcloud without an external proxy, use the standalone version.
 
-### 3.1. Edit Nginx Configuration
-Navigate to the `standalone` directory. In `nginx.conf`, replace the placeholder domain with your actual server IP or standard domain name.
+This stack serves plain HTTP on port 80. It does not terminate TLS and does not issue certificates — use the reverse proxy version for that, or put your own TLS terminator in front.
+
+### 3.1. Check the Nginx Configuration
+`standalone/nginx.conf` answers on any hostname (`server_name _`), so it works over a LAN IP as-is and normally needs no editing. Set `NEXTCLOUD_DOMAIN` in `.env` to the address you will actually use; it becomes Nextcloud's `overwritehost`.
 
 ### 3.2. Start the Stack
 Deploy the standalone Nextcloud stack. The Nginx web server will bind directly to port 80 on your host.
 ```bash
 cd standalone
-docker-compose up -d
+docker compose up -d
 ```
 
 ---
@@ -134,6 +153,8 @@ The workable order is to back up first, delete the old images, and only then bui
 
 ```bash
 docker compose stop nextcloud cron && docker compose rm -f nextcloud cron
+docker images | grep nextcloud     # image names are <compose-project>-nextcloud / -cron,
+                                   # where the project defaults to the stack directory name
 docker rmi <project>-nextcloud <project>-cron
 docker compose build nextcloud
 ```
@@ -149,8 +170,10 @@ docker run --rm -v <project>_nextcloud:/src:ro -v /backup:/dst alpine tar cf /ds
 
 The App Store tarball is under 100 MB; the models are fetched separately. An app update therefore wipes `custom_apps/recognize/models` entirely (~1.2 GB). Re-download them and re-apply the patches:
 
+`occ` lives inside the container and runs as the web server user, so every invocation below takes this shape:
+
 ```bash
-occ recognize:download-models
+docker exec -u 33 nextcloud-app php occ recognize:download-models
 ./scripts/patch_movinet_xla.sh
 ```
 
@@ -185,10 +208,11 @@ If you are running an older copy of this config, the workaround is `docker resta
 ### Post-upgrade steps
 
 ```bash
-occ db:add-missing-indices
-occ db:add-missing-columns
-occ db:add-missing-primary-keys
-occ maintenance:repair --include-expensive   # sanitizes system tags; skipped during upgrades because it is slow
+docker exec -u 33 nextcloud-app php occ db:add-missing-indices
+docker exec -u 33 nextcloud-app php occ db:add-missing-columns
+docker exec -u 33 nextcloud-app php occ db:add-missing-primary-keys
+docker exec -u 33 nextcloud-app php occ maintenance:repair --include-expensive
+# the last one sanitizes system tags; upgrades skip it because it is slow
 ```
 
 ### The code integrity error is expected here
@@ -250,7 +274,8 @@ VRAM caveat: NVDEC needs a few hundred MB of GPU memory on top of what TensorFlo
 Not a bug. Recognize classifier jobs are registered as `TIME_INSENSITIVE`, and Nextcloud only runs such jobs inside the maintenance window (`maintenance_window_start` system config, default window = start hour + 4h, UTC). Outside the window the queue simply waits — check `occ config:system:get maintenance_window_start` before debugging. To drain a large backlog immediately, force the job in a loop:
 
 ```bash
-occ background-job:execute <job-id> --force-execute   # job-id from oc_jobs, class ClassifyMovinetJob
+docker exec -u 33 nextcloud-app php occ background-job:execute <job-id> --force-execute
+# job-id comes from oc_jobs, class ClassifyMovinetJob
 ```
 
 ### Memories: video playback fails with "failed to connect to go-vod (port 47788)"
