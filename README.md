@@ -6,7 +6,7 @@ This repository provides a production-ready docker-compose environment for Nextc
 - Nextcloud Hub (PHP-FPM) with Redis caching and MariaDB.
 - Collabora Online (CODE) for integrated document editing.
 - Dedicated Cron container for background tasks.
-- Advanced Nginx configuration with Docker internal DNS resolution to prevent 502 Bad Gateway errors.
+- Advanced Nginx configuration with Docker internal DNS resolution for the Collabora backend, so its container IP can change without producing 502 Bad Gateway errors. (The PHP-FPM backend uses a static `upstream` block — see the upgrade notes below.)
 - Automated SSL: Fully automatic Let's Encrypt certificate generation using `nginx-proxy` and `acme-companion`.
 - Hardware Acceleration Ready: Easily enable NVIDIA GPU support by uncommenting the setup blocks in `docker-compose.yml`.
 
@@ -19,7 +19,7 @@ By default, this stack is configured to run on standard CPUs. If you have an NVI
 ---
 
 ## Versions & Stack Details
-- **Nextcloud**: `33.0.5 FPM` (Custom built with Hybrid CUDA 11.8 / 12.6 setup for GPU processing capabilities)
+- **Nextcloud**: `34.0.3 FPM` (Custom built with Hybrid CUDA 11.8 / 12.6 setup for GPU processing capabilities). The base image carries PHP 8.5 on Debian trixie; the 33.x line carried PHP 8.4 on the same OS.
 - **MariaDB**: `10.6` (Stable release optimized with custom InnoDB parameters)
 - **Redis**: `7-alpine` (Configured with append-only mode for persistence)
 - **Collabora Online**: `collabora/code` (Latest Stable with SSL disabled internally for proxying)
@@ -96,6 +96,97 @@ Deploy the standalone Nextcloud stack. The Nginx web server will bind directly t
 cd standalone
 docker-compose up -d
 ```
+
+---
+
+## Upgrading to a New Major Version
+
+Notes from moving this stack from 33.0.5 to 34.0.3. The core upgrade itself is handled by the image entrypoint; almost all of the work is around it.
+
+### One major version per rebuild, but the patch level does not matter
+
+The entrypoint refuses an upgrade only when the image is more than one major version ahead of the installed instance:
+
+```sh
+if [ "${image_version%%.*}" -gt "$((${installed_version%%.*} + 1))" ]; then
+```
+
+So `33.0.5 → 34.0.3` is a single valid hop. There is no need to land on the latest 33.x first, which matters here because every rebuild re-downloads the CUDA layers.
+
+### Check app compatibility before touching the tag
+
+Apps that ship with the server move with it, but App Store apps do not. Query the App Store for the target platform and compare against what is installed:
+
+```bash
+curl -s https://apps.nextcloud.com/api/v1/platform/34.0.0/apps.json \
+  | jq -r '.[] | select(.id=="recognize") | .releases[] | "\(.version) \(.platformVersionSpec)"'
+```
+
+Both **Recognize** and **Richdocuments** pin themselves to a single server major (`>=34.0.0 <35.0.0`), so each server major requires a matching app major — Recognize 11 → 12, Richdocuments 10 → 11 in this case. Also check `phpVersionSpec`: the 34 base image ships PHP 8.5, and apps declaring `<8.6` still pass while anything capped at `<8.5` would not.
+
+The entrypoint updates App Store apps automatically during the upgrade, so these usually need no manual installation — only verification afterwards.
+
+### Disk space decides the order of operations
+
+The custom GPU image is roughly 8.9 GB, most of it CUDA 11.8 + 12.6 + cuDNN. Building a new one while the old one is still present needs that much free space twice over, and the "reclaimable" figure from `docker system df` is misleading: the Nextcloud and cron images share a base, which the report counts twice.
+
+The workable order is to back up first, delete the old images, and only then build:
+
+```bash
+docker compose stop nextcloud cron && docker compose rm -f nextcloud cron
+docker rmi <project>-nextcloud <project>-cron
+docker compose build nextcloud
+```
+
+Rollback does not depend on keeping the old image around. Point `FROM` back at the previous tag and rebuild — old tags remain on Docker Hub. What does need backing up is the database and the `nextcloud` volume, which holds `custom_apps` including several GB of Recognize models:
+
+```bash
+docker exec <db> mariadb-dump --single-transaction -u root -p<pw> <db> > nextcloud.sql
+docker run --rm -v <project>_nextcloud:/src:ro -v /backup:/dst alpine tar cf /dst/html.tar -C /src .
+```
+
+### Recognize models are not in the app package
+
+The App Store tarball is under 100 MB; the models are fetched separately. An app update therefore wipes `custom_apps/recognize/models` entirely (~1.2 GB). Re-download them and re-apply the patches:
+
+```bash
+occ recognize:download-models
+./scripts/patch_movinet_xla.sh
+```
+
+One trap: **app commands do not exist while the instance is in maintenance mode**. `occ recognize:download-models` fails with "There are no commands defined in the recognize namespace" rather than a mode warning. Turn maintenance mode off first.
+
+The Recognize 12 update also replaces its bundled Node runtime (20 → 22) while keeping `@tensorflow/tfjs-node-gpu` on 4.x, so the CUDA layers in the Dockerfile need no changes. Confirm the GPU path still binds before trusting it:
+
+```bash
+docker exec -w /var/www/html/custom_apps/recognize <app> ./bin/node \
+  -e "const tf=require('@tensorflow/tfjs-node-gpu');tf.ready().then(()=>console.log(tf.getBackend()))"
+```
+
+A successful run logs `Created device /device:GPU:0` and the card name.
+
+### Recreating the app container breaks the FPM upstream
+
+`nginx.conf` resolves Collabora through a variable and the Docker resolver, so its IP may change freely. The PHP-FPM backend is declared as a static `upstream` block, which Nginx resolves once at startup. Recreating the Nextcloud container gives it a new IP and every request returns 502 until the web container is restarted:
+
+```bash
+docker restart nextcloud-web
+```
+
+Worth doing as the last step of any upgrade that recreates the app container.
+
+### Post-upgrade steps
+
+```bash
+occ db:add-missing-indices
+occ db:add-missing-columns
+occ db:add-missing-primary-keys
+occ maintenance:repair --include-expensive   # sanitizes system tags; skipped during upgrades because it is slow
+```
+
+### The code integrity error is expected here
+
+`occ setupchecks` reports a failed integrity check for `core/js/mimetypelist.js` (invalid hash) and `core/img/filetypes/*.svg` (extra files). This is not upgrade damage — the Drawio app registers custom mimetypes, which writes icons into the core directory and regenerates the mimetype list. It is present before and after the upgrade, and it will reappear whenever Drawio is installed.
 
 ---
 

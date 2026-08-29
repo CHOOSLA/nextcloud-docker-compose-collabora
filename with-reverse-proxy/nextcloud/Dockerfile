@@ -1,5 +1,5 @@
 # 1. Base Image
-FROM nextcloud:33.0.5-fpm
+FROM nextcloud:34.0.3-fpm
 
 # 2. Respository setup (Enable non-free for drivers)
 RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources
@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y \
     && dpkg -i cuda-keyring-11.deb \
     && curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb -o cuda-keyring-12.deb \
     && dpkg -i cuda-keyring-12.deb \
+    && echo "deb [trusted=yes] https://developer.download.nvidia.com/compute/cuda/repos/debian11/x86_64/ /" > /etc/apt/sources.list.d/cuda-debian11-x86_64.list \
+    && echo "deb [trusted=yes] https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/ /" > /etc/apt/sources.list.d/cuda-debian12-x86_64.list \
     && rm *.deb
 
 # 4. Install Hybird CUDA Environment (11.8 for core, 12 for XLA/MoviNet)
@@ -52,4 +54,8 @@ ENV TF_FORCE_GPU_ALLOW_GROWTH=true
 ENV TF_XLA_FLAGS="--tf_xla_cpu_global_jit=false"
 ENV XLA_FLAGS="--xla_gpu_cuda_data_dir=/usr/local/cuda-11.8"
 
-
+# 6. PHP Configuration Updates
+# Make the opcache interned strings buffer configurable from docker-compose.
+# Note: this is a silent no-op if upstream ever changes the default value, so
+# check the value in the new base image when bumping the Nextcloud tag.
+RUN sed -i 's/opcache.interned_strings_buffer=32/opcache.interned_strings_buffer=${PHP_OPCACHE_INTERNED_STRINGS_BUFFER}/g' /usr/local/etc/php/conf.d/opcache-recommended.ini
