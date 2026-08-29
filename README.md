@@ -6,7 +6,7 @@ This repository provides a production-ready docker-compose environment for Nextc
 - Nextcloud Hub (PHP-FPM) with Redis caching and MariaDB.
 - Collabora Online (CODE) for integrated document editing.
 - Dedicated Cron container for background tasks.
-- Advanced Nginx configuration with Docker internal DNS resolution for the Collabora backend, so its container IP can change without producing 502 Bad Gateway errors. (The PHP-FPM backend uses a static `upstream` block — see the upgrade notes below.)
+- Advanced Nginx configuration with Docker internal DNS resolution for both the Collabora and PHP-FPM backends, so either container can be recreated on a new IP without producing 502 Bad Gateway errors.
 - Automated SSL: Fully automatic Let's Encrypt certificate generation using `nginx-proxy` and `acme-companion`.
 - Hardware Acceleration Ready: Easily enable NVIDIA GPU support by uncommenting the setup blocks in `docker-compose.yml`.
 
@@ -165,15 +165,22 @@ docker exec -w /var/www/html/custom_apps/recognize <app> ./bin/node \
 
 A successful run logs `Created device /device:GPU:0` and the card name.
 
-### Recreating the app container breaks the FPM upstream
+### Recreating the app container used to strand the FPM upstream
 
-`nginx.conf` resolves Collabora through a variable and the Docker resolver, so its IP may change freely. The PHP-FPM backend is declared as a static `upstream` block, which Nginx resolves once at startup. Recreating the Nextcloud container gives it a new IP and every request returns 502 until the web container is restarted:
+Rebuilding the image means recreating the Nextcloud container, which can place it on a different IP. Collabora was already resolved through a variable and the Docker resolver, but the PHP-FPM backend was declared as a static `upstream` block — and Nginx resolves those once, at startup. Every request then returned 502 until the web container was restarted.
 
-```bash
-docker restart nextcloud-web
+The configuration in this repository now resolves the FPM backend per request as well:
+
+```nginx
+resolver 127.0.0.11 valid=30s;      # in the server block
+...
+set $fpm_backend nextcloud:9000;    # in each PHP location
+fastcgi_pass $fpm_backend;
 ```
 
-Worth doing as the last step of any upgrade that recreates the app container.
+Verified by forcing the app container onto a different address — occupying its old IP with a throwaway container, recreating Nextcloud so it landed elsewhere, and confirming the site still answered 200 with the web container untouched.
+
+If you are running an older copy of this config, the workaround is `docker restart nextcloud-web` after any rebuild.
 
 ### Post-upgrade steps
 
