@@ -1,5 +1,5 @@
 # 1. Base Image
-FROM nextcloud:34.0.3-fpm
+FROM nextcloud:35.0.2-fpm
 
 # 2. Respository setup (Enable non-free for drivers)
 RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources

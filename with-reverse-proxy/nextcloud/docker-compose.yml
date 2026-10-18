@@ -39,7 +39,7 @@ services:
   nextcloud:
     # [OPTIONAL] Use 'build: .' instead if you want to compile with NVIDIA GPU support (Requires custom Dockerfile)
     # build: .
-    image: nextcloud:34.0.3-fpm
+    image: nextcloud:35.0.2-fpm
     container_name: nextcloud-app
     restart: always
     depends_on:
@@ -90,7 +90,7 @@ services:
   cron:
     # [OPTIONAL] Use 'build: .' instead if you want to compile with NVIDIA GPU support (Requires custom Dockerfile)
     # build: .
-    image: nextcloud:34.0.3-fpm
+    image: nextcloud:35.0.2-fpm
     container_name: nextcloud-cron
     restart: always
     entrypoint: /cron.sh

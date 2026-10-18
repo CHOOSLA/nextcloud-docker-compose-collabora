@@ -27,7 +27,7 @@ docker exec nextcloud-app nvidia-smi
 ---
 
 ## Versions & Stack Details
-- **Nextcloud**: `34.0.3 FPM` — the stock image by default, or the bundled Dockerfile with a hybrid CUDA 11.8 / 12.6 setup when GPU support is enabled. Either way the base carries PHP 8.5 on Debian trixie; the 33.x line carried PHP 8.4 on the same OS.
+- **Nextcloud**: `35.0.2 FPM` — the stock image by default, or the bundled Dockerfile with a hybrid CUDA 11.8 / 12.6 setup when GPU support is enabled. Either way the base carries PHP 8.5 on Debian trixie; the 33.x line carried PHP 8.4 on the same OS.
 - **MariaDB**: `10.6` (Stable release optimized with custom InnoDB parameters)
 - **Redis**: `7-alpine` (Configured with append-only mode for persistence)
 - **Collabora Online**: `collabora/code` (Latest Stable with SSL disabled internally for proxying)
@@ -120,7 +120,7 @@ docker compose up -d
 
 ## Upgrading to a New Major Version
 
-Notes from moving this stack from 33.0.5 to 34.0.3. The core upgrade itself is handled by the image entrypoint; almost all of the work is around it.
+Notes from moving this stack 33.0.5 → 34.0.3 and 34.0.4 → 35.0.1 (then 35.0.2). The core upgrade itself is handled by the image entrypoint; almost all of the work is around it.
 
 ### One major version per rebuild, but the patch level does not matter
 
@@ -130,20 +130,26 @@ The entrypoint refuses an upgrade only when the image is more than one major ver
 if [ "${image_version%%.*}" -gt "$((${installed_version%%.*} + 1))" ]; then
 ```
 
-So `33.0.5 → 34.0.3` is a single valid hop. There is no need to land on the latest 33.x first, which matters here because every rebuild re-downloads the CUDA layers.
+So `33.0.5 → 34.0.3` and `34.0.4 → 35.0.1` are each a single valid hop. There is no need to land on the latest 33.x first, which matters here because every rebuild re-downloads the CUDA layers.
 
 ### Check app compatibility before touching the tag
 
 Apps that ship with the server move with it, but App Store apps do not. Query the App Store for the target platform and compare against what is installed:
 
 ```bash
-curl -s https://apps.nextcloud.com/api/v1/platform/34.0.0/apps.json \
+curl -s https://apps.nextcloud.com/api/v1/platform/35.0.0/apps.json \
   | jq -r '.[] | select(.id=="recognize") | .releases[] | "\(.version) \(.platformVersionSpec)"'
 ```
 
-Both **Recognize** and **Richdocuments** pin themselves to a single server major (`>=34.0.0 <35.0.0`), so each server major requires a matching app major — Recognize 11 → 12, Richdocuments 10 → 11 in this case. Also check `phpVersionSpec`: the 34 base image ships PHP 8.5, and apps declaring `<8.6` still pass while anything capped at `<8.5` would not.
+Both **Recognize** and **Richdocuments** pin themselves to a single server major (`>=35.0.0 <36.0.0` for the 35 builds), so each server major requires a matching app major — Recognize 11 → 12 and Richdocuments 10 → 11 for 34, then Recognize 12 → 13 and Richdocuments 11 → 12 for 35. Also check `phpVersionSpec`: the 34 and 35 base images ship PHP 8.5, and apps declaring `<8.6` still pass while anything capped at `<8.5` would not.
 
 The entrypoint updates App Store apps automatically during the upgrade, so these usually need no manual installation — only verification afterwards.
+
+Do not read `releases[0]` as the latest stable release. For 35 the first Memories entry was `9.1.0-alpha.2`, which looked like Memories had no stable build for 35 yet; the entrypoint actually installed the stable `10.0.1`. Filter out pre-releases, or just check `occ app:list` after the upgrade.
+
+### Patch upgrades are much cheaper
+
+Within one major (34.0.3 → 34.0.4, 35.0.1 → 35.0.2) Recognize and Richdocuments do not move, so the models stay in place and the MoviNet patch stays applied. The cost is the image rebuild plus the backup. Run `occ app:list` before and after to see which apps the entrypoint moved.
 
 ### Disk space decides the order of operations
 
@@ -179,7 +185,7 @@ docker exec -u 33 nextcloud-app php occ recognize:download-models
 
 One trap: **app commands do not exist while the instance is in maintenance mode**. `occ recognize:download-models` fails with "There are no commands defined in the recognize namespace" rather than a mode warning. Turn maintenance mode off first.
 
-The Recognize 12 update also replaces its bundled Node runtime (20 → 22) while keeping `@tensorflow/tfjs-node-gpu` on 4.x, so the CUDA layers in the Dockerfile need no changes. Confirm the GPU path still binds before trusting it:
+The Recognize 12 update also replaces its bundled Node runtime (20 → 22) while keeping `@tensorflow/tfjs-node-gpu` on 4.x, so the CUDA layers in the Dockerfile need no changes. Recognize 13 (for 35) is the same: Node 22, tfjs 4.22, and the GPU binds with the unchanged Dockerfile. Confirm the GPU path still binds before trusting it:
 
 ```bash
 docker exec -w /var/www/html/custom_apps/recognize <app> ./bin/node \
@@ -213,7 +219,23 @@ docker exec -u 33 nextcloud-app php occ db:add-missing-columns
 docker exec -u 33 nextcloud-app php occ db:add-missing-primary-keys
 docker exec -u 33 nextcloud-app php occ maintenance:repair --include-expensive
 # the last one sanitizes system tags; upgrades skip it because it is slow
+docker exec -u 33 nextcloud-app php occ db:schema:check -v
 ```
+
+### A migration can be recorded as done while its table is missing
+
+After the 35 upgrade, `db:schema:check` reported `missing table 'oc_federated_invites'` although `oc_migrations` already listed the `cloud_federation_api` migration that creates it. 35 no longer has `occ migrations:execute`, so the migration has to be run again through a normal upgrade. Back up the database first:
+
+```bash
+# forget the recorded migration, then make the app look outdated
+DELETE FROM oc_migrations WHERE app='cloud_federation_api' AND version='1016Date202502262004';
+docker exec -u 33 nextcloud-app php occ config:app:set cloud_federation_api installed_version --value=1.99.0
+docker exec -u 33 nextcloud-app php occ upgrade   # re-runs the app migrations and restores the version
+```
+
+Use `occ config:app:set` instead of editing `oc_appconfig` directly. Otherwise the Redis cache keeps the old value.
+
+The other findings can stay as they are. `memories_parent_mimetype` and `memories_type_tagid` are indices that Memories adds on purpose.
 
 ### The code integrity error is expected here
 
