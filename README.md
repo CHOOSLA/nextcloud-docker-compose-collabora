@@ -211,6 +211,34 @@ Verified by forcing the app container onto a different address — occupying its
 
 If you are running an older copy of this config, the workaround is `docker restart nextcloud-web` after any rebuild.
 
+### Five PHP-FPM workers is not enough for sync clients
+
+The stock `nextcloud:fpm` image ships `pm.max_children = 5`, and its entrypoint never reads a `PHP_PM_*` environment variable. Setting `PHP_PM_MAX_CHILDREN` in Compose changes nothing. The live instance carried that variable for months while the container still ran five workers.
+
+Five is fine for a browser. It is not fine once desktop sync clients, rclone or other WebDAV tools keep several PROPFIND and SEARCH requests open at all times. On the live instance the pool was already logging `server reached pm.max_children setting (5)` a few hundred times a day. Then the iOS app started downloading a folder of large PDFs. Each download held a worker for its whole transfer, the remaining requests queued behind them, and Nginx gave up after its default 60-second FastCGI timeout. For about eight minutes almost everything returned 504.
+
+Both stacks now mount `zz-pm.conf` into `/usr/local/etc/php-fpm.d/`, which loads after the image's own `zz-docker.conf`:
+
+```ini
+[www]
+pm = dynamic
+pm.max_children = 32
+pm.start_servers = 8
+pm.min_spare_servers = 4
+pm.max_spare_servers = 12
+pm.max_requests = 500
+```
+
+A worker sat around 120 MB RSS here, so 32 workers is roughly 4 GB at full load on a 16 GB host. Scale it to your RAM. To see what PHP-FPM will actually use before recreating anything:
+
+```bash
+docker run --rm --entrypoint php-fpm \
+  -v "$PWD/zz-pm.conf:/usr/local/etc/php-fpm.d/zz-pm.conf:ro" \
+  nextcloud:35.0.2-fpm -tt 2>&1 | grep max_children
+```
+
+Without the file this prints `5`, with it `32`. Apply it with `docker compose up -d nextcloud`. Right after the change the pool grew straight to 13 workers, so demand had been above five all along.
+
 ### Post-upgrade steps
 
 ```bash
@@ -246,6 +274,7 @@ The other findings can stay as they are. `memories_parent_mimetype` and `memorie
 ## Troubleshooting
 
 - **502 Bad Gateway while editing documents**: The Nginx configuration in this repository dynamically resolves the Collabora container IP to prevent caching issues. If you still encounter this error, verify that the `nextcloud-collabora` container is fully mapped to the correct network.
+- **504 Gateway Timeout under sync load**: Check `docker logs nextcloud-app 2>&1 | grep max_children`. If the pool keeps hitting its limit, raise `pm.max_children` in `zz-pm.conf`. The `PHP_PM_*` environment variables have no effect on the stock image.
 - **SSL Certificate issues (Reverse Proxy)**: Check the Let's Encrypt companion container logs (`docker logs nextcloud-letsencrypt-companion` or similar) to ensure your DuckDNS domain is resolving to the correct IP address.
 
 ---
